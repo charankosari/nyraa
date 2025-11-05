@@ -1,0 +1,80 @@
+{
+  "requestId": "997c009f-af8b-4fd7-b03a-db5b96b916cc",
+  "createdAt": "2025-11-05T11:56:20.936156Z",
+  "conversations": [
+    {
+      "user": "हाय हेलो नमस्ते मेरा नाम शिवचरण है।",
+      "llm": "Naira AI agent Sunrise Hospital తరపున మీతో మాట్లాడుతోంది. మీకు ఎలా సహాయంగా ఉంటాను?",
+      "createdAt": "2025-11-05T11:56:26.585474Z"
+    },
+    {
+      "user": "हम हिंदी में बात कर रहे हैं क्या?",
+      "llm": "जी हाँ, हम हिंदी में बात कर रहे हैं। कैसे मदद कर सकता हूँ?",
+      "createdAt": "2025-11-05T11:56:38.776951Z"
+    },
+    {
+      "user": "आप कोई डॉक्टर्स हैं क्या हॉस्पिटल पे आपका हॉस्पिटल का हॉस्पिटल का नाम क्या है?",
+      "llm": "Sunrise Hospital में कई डॉक्टर्स हैं। आप किस स्पेशलिटी के डॉक्टर की तलाश कर रहे हैं? यहाँ कुछ डॉक्टर हैं:\n\nडॉ. शर्मा — Cardiology  \nडॉ. गुप्ता — General Medicine  \n\nअगर आपको किसी स्पेशलिटी के बारे में जानकारी चाहिए, तो बताइए।",
+      "createdAt": "2025-11-05T11:56:56.163669Z"
+    },
+    {
+      "user": "मुझे जनरल मेडिसिन का डॉक्टर चाहिए था उसको खाली डेथ से क्या?",
+      "llm": "डॉ. गुप्ता — General Medicine  \n\nडॉ. गुप्ता के पास निम्नलिखित स्लॉट उपलब्ध हैं:  \n\n- 6 नवंबर, 2025 को 9:30 AM  \n- 6 नवंबर, 2025 को 12:00 PM  \n- 8 नवंबर, 2025 को 2:00 PM  \n\nकौन सा स्लॉट आपको ठीक लगता है?",
+      "createdAt": "2025-11-05T11:57:24.492288Z"
+    },
+    {
+      "user": "कोई भी एक स्लॉट अराउंड आफ्टरनून बुक कर दो।",
+      "llm": "डॉ. गुप्ता के पास 8 नवंबर, 2025 को 2:00 PM का स्लॉट उपलब्ध है। क्या ये स्लॉट आपको ठीक लगता है?",
+      "createdAt": "2025-11-05T11:57:51.665053Z"
+    },
+    {
+      "user": "मुझे ठीक है, इसमें भी बुक कर लो।",
+      "llm": "आपका पहले से बुक किया हुआ अपॉइंटमेंट डॉ. गुप्ता के साथ 8 नवंबर, 2025 को 2:00 PM है। क्या आप किसी और स्पेशलिटी के डॉक्टर के साथ भी बुकिंग करवाना चाहते हैं? जैसे कि डॉ. शर्मा (Cardiology) के पास निम्नलिखित स्लॉट्स उपलब्ध हैं:\n\n- 6 नवंबर, 2025 को 10:00 AM  \n- 6 नवंबर, 2025 को 11:00 AM  \n- 7 नवंबर, 2025 को 3:00 PM  \n\nकौन सा स्लॉट आपको ठीक लगता है?",
+      "createdAt": "2025-11-05T11:58:10.780195Z"
+    },
+    {
+      "user": "For me it's enough for one booking. Can you please send this right now and we speak in English.",
+      "llm": "I'm sorry to hear you're not feeling well — let's get this sorted. Your appointment with Dr. Gupta is confirmed for November 8, 2025, at 2:00 PM. \n\nTo finalize the booking, could you please provide your mobile number, reason for the visit, and preferred location?",
+      "createdAt": "2025-11-05T11:58:52.114839Z"
+    },
+    {
+      "user": "My number is 7993264289 and reason for the visit is I am having a cold and prefer location in East Hyderabad Kukatpally.",
+      "llm": "Thank you, शिवचरण. Your appointment with Dr. Gupta is confirmed for November 8, 2025, at 2:00 PM. \n\nHere’s a quick recap:\n- **Mobile Number:** 7993264289\n- **Reason for Visit:** Cold\n- **Location:** East Hyderabad, Kukatpally\n\nIf everything looks good, I'm finalizing your booking now!",
+      "createdAt": "2025-11-05T11:59:29.203144Z"
+    },
+    {
+      "user": "Final book.",
+      "llm": "Thank you, शिवचरण. Your appointment with Dr. Gupta is confirmed for November 8, 2025, at 2:00 PM. \n\nHere’s a recap:\n- **Mobile Number:** 7993264289\n- **Reason for Visit:** Cold\n- **Location:** East Hyderabad, Kukatpally\n\nEverything looks good. Your booking is now finalized! If you need anything else, just let me know.",
+      "createdAt": "2025-11-05T11:59:51.591488Z"
+    },
+    {
+      "user": "I am good with it, like in the curve.",
+      "llm": "Glad to hear you're doing well! If you need any further assistance or have any other requests related to your appointment or the hospital, just let me know.",
+      "createdAt": "2025-11-05T12:00:31.113565Z"
+    },
+    {
+      "user": "Yes.",
+      "llm": "I'm here to help! What can I assist you with today at Sunrise Hospital?",
+      "createdAt": "2025-11-05T12:00:37.731555Z"
+    }
+  ],
+  "user_details": {
+    "name": "शिवचरण",
+    "age": "",
+    "phone": "7993264289",
+    "language": "en-IN",
+    "location": "East Hyderabad, Kukatpally"
+  },
+  "bookings": [
+    {
+      "doctor_name": "डॉ. गुप्ता",
+      "department": "",
+      "date": "2025-11-08",
+      "time": "14:00",
+      "reason": "Cold",
+      "appointment_id": "b1e3ead1-8ff1-4c34-b9f3-647e9eedc70b",
+      "status": "confirmed"
+    }
+  ],
+  "lastUpdatedAt": "2025-11-05T12:00:37.731566Z"
+}
