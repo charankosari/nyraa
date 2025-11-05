@@ -1,60 +1,121 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Streaming AI Agent (Batch STT)</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Streaming AI Agent (Batch STT) — Debug Audio</title>
     <style>
       body {
         font-family: sans-serif;
-        max-width: 600px;
-        margin: 40px auto;
+        max-width: 700px;
+        margin: 28px auto;
       }
       #recordButton {
-        padding: 15px;
+        padding: 12px 18px;
         font-size: 16px;
         cursor: pointer;
       }
       #recordButton.recording {
-        background-color: #f44336;
-        color: white;
+        background: #f44336;
+        color: #fff;
       }
       #status {
-        margin-top: 20px;
-        font-weight: bold;
-        color: #333;
+        margin-top: 12px;
+        font-weight: 600;
       }
       #transcript {
-        margin-top: 15px;
-        min-height: 50px;
+        margin-top: 12px;
         border: 1px solid #ddd;
         padding: 10px;
+        min-height: 40px;
+      }
+      #llmText {
+        margin-top: 10px;
+        font-style: italic;
+        color: #333;
+      }
+      #debug {
+        margin-top: 14px;
+        font-family: monospace;
+        white-space: pre-wrap;
+        background: #f7f7f7;
+        padding: 10px;
+        border-radius: 6px;
+        max-height: 220px;
+        overflow: auto;
+      }
+      #downloadLink {
+        display: inline-block;
+        margin-top: 8px;
       }
     </style>
   </head>
   <body>
-    <h2>Real-Time Agent (Batch STT)</h2>
-    <button id="recordButton">Hold to Talk</button>
+    <h2>Real-Time Agent (Batch STT) — Debug Audio</h2>
 
+    <button id="recordButton">Hold to Talk</button>
     <div id="status">Press and hold the button to talk...</div>
+
     <div id="transcript">
       <strong>Transcript:</strong>
-      <p id="transcriptText"></p>
+      <div id="transcriptText"></div>
     </div>
+    <div id="llmText">
+      <strong>Agent (text):</strong> <span id="llmTextContent"></span>
+    </div>
+
+    <div style="margin-top: 12px">
+      <button id="downloadBtn" style="display: none">
+        Download last audio
+      </button>
+      <a
+        id="downloadAnchor"
+        style="display: none"
+        download="debug_last_audio.mp3"
+        >(manual download link)</a
+      >
+    </div>
+
+    <div id="debug"></div>
 
     <script>
       const recordButton = document.getElementById("recordButton");
       const statusEl = document.getElementById("status");
       const transcriptTextEl = document.getElementById("transcriptText");
+      const llmTextContent = document.getElementById("llmTextContent");
+      const debugEl = document.getElementById("debug");
+      const downloadBtn = document.getElementById("downloadBtn");
+      const downloadAnchor = document.getElementById("downloadAnchor");
 
-      let ws;
-      let mediaRecorder;
+      let ws = null,
+        mediaRecorder = null;
+      let collectingBlobs = false,
+        collectedBlobs = [];
+      let lastCombinedBlob = null;
+      let playbackQueue = [],
+        currentAudio = null;
 
-      // playback queue using blob object URLs (reliable across browsers)
-      let currentAudio = null;
-      let playbackQueue = []; // array of object URLs
+      function logDebug(...args) {
+        const s = args
+          .map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a)))
+          .join(" ");
+        debugEl.textContent =
+          new Date().toLocaleTimeString() +
+          "  " +
+          s +
+          "\n" +
+          debugEl.textContent;
+      }
 
       function setupWebSocket() {
+        if (
+          ws &&
+          (ws.readyState === WebSocket.OPEN ||
+            ws.readyState === WebSocket.CONNECTING)
+        ) {
+          logDebug("WS already open/connecting; skipping setup");
+          return;
+        }
         const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
         ws = new WebSocket(`${proto}//${window.location.host}/ws/agent`);
         ws.binaryType = "blob";
@@ -62,49 +123,108 @@
         ws.onopen = () => {
           statusEl.textContent = "Connected. Hold to talk.";
           recordButton.disabled = false;
+          logDebug("WS open");
         };
 
-        ws.onmessage = (event) => {
+        ws.onmessage = async (event) => {
+          logDebug(
+            "WS frame received (type):",
+            typeof event.data,
+            "size:",
+            event.data && event.data.size ? event.data.size : "N/A"
+          );
+
           if (event.data instanceof Blob) {
-            // binary audio chunk -> create object URL and queue it
-            const objUrl = URL.createObjectURL(event.data);
-            playbackQueue.push(objUrl);
-            if (!currentAudio) playFromQueue();
-          } else {
-            // JSON control message
-            let data;
-            try {
-              data = JSON.parse(event.data);
-            } catch (e) {
-              console.error("Failed to parse websocket text message:", e);
+            logDebug("Binary frame received, size:", event.data.size);
+            if (collectingBlobs) {
+              collectedBlobs.push(event.data);
+              logDebug(
+                "-> appended fragment (collecting mode). fragments:",
+                collectedBlobs.length
+              );
               return;
             }
+            // direct blob: play immediately or queue
+            lastCombinedBlob = event.data;
+            setupDownload(lastCombinedBlob);
+            playbackQueue.push(URL.createObjectURL(event.data));
+            if (!currentAudio) tryPlayQueue();
+            return;
+          }
 
-            if (data.type === "final_transcript") {
-              transcriptTextEl.textContent = data.text;
-              statusEl.textContent = "Agent is thinking...";
-            } else if (data.type === "error") {
-              statusEl.textContent = `Error: ${data.message}`;
-            } else if (data.type === "llm_response") {
-              // Optional: log LLM text locally in browser console (server logging is still recommended)
-              console.log("LLM:", data.text);
+          // text frame
+          let parsed = null;
+          try {
+            parsed = JSON.parse(event.data);
+          } catch (e) {
+            logDebug("non-json text frame:", event.data);
+            return;
+          }
+          if (!parsed || typeof parsed !== "object") return;
+          const t = parsed.type;
+          logDebug("Text frame ->", parsed);
+
+          if (t === "final_transcript") {
+            transcriptTextEl.textContent = parsed.text || "";
+            statusEl.textContent = "Agent is thinking...";
+          } else if (t === "llm_response_partial") {
+            // append partial into agent text UI
+            llmTextContent.textContent =
+              (llmTextContent.textContent || "") + (parsed.text || "");
+          } else if (t === "llm_response") {
+            llmTextContent.textContent = parsed.text || "";
+          } else if (t === "audio_start") {
+            collectingBlobs = true;
+            collectedBlobs = [];
+            logDebug("audio_start received -> entering collect mode");
+          } else if (t === "audio_end") {
+            collectingBlobs = false;
+            logDebug(
+              "audio_end received, fragments collected:",
+              collectedBlobs.length
+            );
+            if (collectedBlobs.length === 0) {
+              logDebug("warning: audio_end but no fragments found");
+              return;
             }
+            const combined = new Blob(collectedBlobs, { type: "audio/mpeg" });
+            lastCombinedBlob = combined;
+            setupDownload(combined);
+            playbackQueue.push(URL.createObjectURL(combined));
+            if (!currentAudio) tryPlayQueue();
+            collectedBlobs = [];
+          } else if (t === "error") {
+            logDebug("server error:", parsed.message);
+            statusEl.textContent = "Error: " + (parsed.message || "unknown");
+          } else {
+            logDebug("unknown text message type:", t, parsed);
           }
         };
 
-        ws.onclose = () => {
-          statusEl.textContent = "Disconnected. Refreshing in 3s...";
-          recordButton.disabled = true;
-          setTimeout(() => window.location.reload(), 3000);
+        ws.onclose = (ev) => {
+          statusEl.textContent = "Disconnected. Refresh page.";
+          logDebug("WS closed", ev);
         };
 
         ws.onerror = (err) => {
-          statusEl.textContent = "WebSocket Error. Check console.";
-          console.error("WebSocket Error:", err);
+          logDebug("WS error", err);
         };
       }
 
-      function playFromQueue() {
+      function setupDownload(blob) {
+        try {
+          downloadAnchor.href = URL.createObjectURL(blob);
+          downloadAnchor.style.display = "inline";
+          downloadBtn.style.display = "inline-block";
+          downloadBtn.onclick = () => {
+            downloadAnchor.click();
+          };
+        } catch (e) {
+          logDebug("setupDownload error", e);
+        }
+      }
+
+      function tryPlayQueue() {
         if (playbackQueue.length === 0) {
           currentAudio = null;
           statusEl.textContent = "Connected. Hold to talk.";
@@ -119,44 +239,100 @@
             URL.revokeObjectURL(url);
           } catch (e) {}
           currentAudio = null;
-          if (playbackQueue.length > 0) playFromQueue();
+          if (playbackQueue.length > 0) tryPlayQueue();
           else statusEl.textContent = "Connected. Hold to talk.";
         };
 
-        currentAudio.onerror = (e) => {
-          console.error("Audio playback error", e);
+        currentAudio.onerror = async (e) => {
+          logDebug(
+            "Audio.play() error; will fallback to WebAudio decode attempt:",
+            e
+          );
+          // fallback: fetch the blob and decode via AudioContext
           try {
-            URL.revokeObjectURL(url);
-          } catch (e) {}
-          currentAudio = null;
-          if (playbackQueue.length > 0) playFromQueue();
+            const resp = await fetch(url);
+            const arr = await resp.arrayBuffer();
+            await playArrayBufferWithWebAudio(arr);
+          } catch (err) {
+            logDebug("Fallback decode/play failed:", err);
+          } finally {
+            try {
+              URL.revokeObjectURL(url);
+            } catch (e) {}
+            currentAudio = null;
+            if (playbackQueue.length > 0) tryPlayQueue();
+          }
         };
 
         statusEl.textContent = "Agent is speaking...";
-        currentAudio.play().catch((err) => {
-          console.warn("play() rejected:", err);
+        currentAudio.play().catch(async (err) => {
+          logDebug("play() rejected; attempting WebAudio fallback:", err);
+          try {
+            const resp = await fetch(url);
+            const arr = await resp.arrayBuffer();
+            await playArrayBufferWithWebAudio(arr);
+          } catch (err2) {
+            logDebug("WebAudio fallback failed:", err2);
+          } finally {
+            try {
+              URL.revokeObjectURL(url);
+            } catch (e) {}
+            currentAudio = null;
+            if (playbackQueue.length > 0) tryPlayQueue();
+          }
         });
       }
 
+      async function playArrayBufferWithWebAudio(arrayBuffer) {
+        try {
+          const ctx =
+            window._debugAudioCtx ||
+            (window._debugAudioCtx = new (window.AudioContext ||
+              window.webkitAudioContext)());
+          const decoded = await ctx.decodeAudioData(arrayBuffer);
+          const src = ctx.createBufferSource();
+          src.buffer = decoded;
+          src.connect(ctx.destination);
+          const playPromise = new Promise((res) => {
+            src.onended = res;
+          });
+          src.start(0);
+          await playPromise;
+          logDebug("WebAudio played decoded buffer successfully");
+        } catch (e) {
+          logDebug("WebAudio decode/play error:", e);
+          throw e;
+        }
+      }
+
       async function startRecording() {
-        // If websocket isn't open yet, open and return so user can press again after connect
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           statusEl.textContent = "Connecting...";
           setupWebSocket();
+          if (ws)
+            ws.addEventListener(
+              "open",
+              () => {
+                startRecording().catch((e) =>
+                  logDebug("startRecording after connect failed", e)
+                );
+              },
+              { once: true }
+            );
           return;
         }
 
-        // Stop any currently playing audio (clear queue)
-        playbackQueue.forEach((url) => {
+        // clear queue + stop current audio
+        playbackQueue.forEach((u) => {
           try {
-            URL.revokeObjectURL(url);
-          } catch (e) {}
+            URL.revokeObjectURL(u);
+          } catch {}
         });
         playbackQueue = [];
         if (currentAudio) {
           try {
             currentAudio.pause();
-          } catch (e) {}
+          } catch {}
           currentAudio = null;
         }
 
@@ -164,15 +340,23 @@
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: true,
           });
-
-          // Use 'audio/webm' - backend Batch STT API can handle this
           mediaRecorder = new MediaRecorder(stream, {
             mimeType: "audio/webm; codecs=opus",
           });
 
-          mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-              ws.send(event.data); // send Blob chunk to backend
+          mediaRecorder.ondataavailable = (ev) => {
+            if (
+              ev.data &&
+              ev.data.size > 0 &&
+              ws &&
+              ws.readyState === WebSocket.OPEN
+            ) {
+              try {
+                ws.send(ev.data);
+                logDebug("sent audio chunk to server size", ev.data.size);
+              } catch (err) {
+                logDebug("ws.send chunk failed", err);
+              }
             }
           };
 
@@ -180,33 +364,36 @@
             recordButton.classList.add("recording");
             statusEl.textContent = "Listening...";
             transcriptTextEl.textContent = "";
-            mediaRecorder.start(250); // emit 250ms chunks
           };
 
           mediaRecorder.onstop = () => {
             recordButton.classList.remove("recording");
             statusEl.textContent = "Processing...";
-            stream.getTracks().forEach((track) => track.stop());
-
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "stop_speaking" }));
-            }
+            stream.getTracks().forEach((t) => t.stop());
+            if (ws && ws.readyState === WebSocket.OPEN)
+              try {
+                ws.send(JSON.stringify({ type: "stop_speaking" }));
+              } catch (e) {
+                logDebug("stop_speaking send failed", e);
+              }
           };
 
-          mediaRecorder.start();
+          mediaRecorder.start(250);
         } catch (e) {
-          console.error("Microphone access denied:", e);
-          statusEl.textContent = "Error: Microphone access denied.";
+          logDebug("startRecording failed:", e);
+          statusEl.textContent = "Error: Microphone denied";
         }
       }
 
       function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-          mediaRecorder.stop();
+        try {
+          if (mediaRecorder && mediaRecorder.state === "recording")
+            mediaRecorder.stop();
+        } catch (e) {
+          logDebug("stopRecording err", e);
         }
       }
 
-      // UI events
       recordButton.addEventListener("mousedown", startRecording);
       recordButton.addEventListener("mouseup", stopRecording);
       recordButton.addEventListener(
@@ -226,7 +413,6 @@
         { passive: false }
       );
 
-      // Start initial websocket connection
       setupWebSocket();
     </script>
   </body>
