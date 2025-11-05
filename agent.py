@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 # -----------------------
 # Config
 # -----------------------
+
 router = APIRouter()
 DATA_DIR = "data"
 TEMP_DIR = "temp"
@@ -32,7 +33,8 @@ DEFAULT_VOICE = "anushka"
 
 HOSPITAL_NAME = os.getenv("HOSPITAL_NAME", "Sunrise Hospital")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "NyraAI")
-
+HOSPITAL_NAME_TELUGU = os.getenv("HOSPITAL_NAME_TELUGU","సన్రైస్ హాస్పిటల్")  # e.g. "సన్రైస్ హాస్పిటల్"
+ASSISTANT_NAME_TELUGU = os.getenv("ASSISTANT_NAME_TELUGU","నైరా ఏఐ ఏజెంట్")  # e.g. "నైరా ఏఐ ఏజెంట్"
 try:
     sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -44,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 # -----------------------
 # Dummy Booking Data
 # -----------------------
+
 DUMMY_AVAILABLE_SLOTS = {
     "Dr. Sharma": {
         "department": "Cardiology",
@@ -63,10 +66,60 @@ DUMMY_AVAILABLE_SLOTS = {
     }
 }
 
+# -----------------------
+# Booking helper stubs
+# -----------------------
+def book_appointment(data: dict):
+    """
+    Stub for creating a booking in your real system.
+    For now: just print the booking data. Replace with DB/API call later.
+    """
+    try:
+        print("[BOOK_APPOINTMENT] Booking data:", json.dumps(data, ensure_ascii=False))
+    except Exception:
+        print("[BOOK_APPOINTMENT] Booking data (could not JSON dump):", data)
 
+
+def cancel_booking(data: dict):
+    """
+    Stub for cancelling a booking in your real system.
+    Expected data contains appointment_id and optionally reason.
+    """
+    try:
+        print("[CANCEL_BOOKING] Cancel request:", json.dumps(data, ensure_ascii=False))
+        # simulate cancel result
+        print(f"[CANCEL_BOOKING] appointment {data.get('appointment_id')} cancelled.")
+    except Exception:
+        print("[CANCEL_BOOKING] Cancel data:", data)
+
+
+def reschedule_booking(data: dict):
+    """
+    Stub for rescheduling a booking.
+    data should contain appointment_id and new date/time.
+    """
+    try:
+        print("[RESCHEDULE_BOOKING] Reschedule request:", json.dumps(data, ensure_ascii=False))
+        print(f"[RESCHEDULE_BOOKING] appointment {data.get('appointment_id')} rescheduled.")
+    except Exception:
+        print("[RESCHEDULE_BOOKING] Reschedule data:", data)
+
+# -----------------------
+# Intent / prompt helpers (AI-driven)
+# -----------------------
+def append_additional_prompt(history: dict, prompt_text: str):
+    """Append a small model-generated intent or context tag."""
+    if not history:
+        return
+    if "additional_prompts" not in history or history["additional_prompts"] is None:
+        history["additional_prompts"] = []
+    from datetime import datetime
+    entry = {"at": datetime.utcnow().isoformat() + "Z", "text": prompt_text}
+    history["additional_prompts"].append(entry)
 # -----------------------
 # Helpers (No changes to extract_json_from_text or remove_json_and_metadata_markers)
 # -----------------------
+
 def extract_json_from_text(text: str):
     """Return first balanced JSON object parsed from text, or None."""
     if not text:
@@ -140,58 +193,173 @@ async def llm_for_response(user_transcript: str, language_code: str, request_id:
     """
     if not user_transcript:
         return None
-        
+    greeting_sent = False
+    try:
+        # prefer explicit flag if present
+        if history.get("_greeting_sent"):
+            greeting_sent = True
+        else:
+            for c in history.get("conversations", []):
+                llm_msg = (c.get("llm") or "")
+                if "నైరా" in llm_msg or (ASSISTANT_NAME_TELUGU and ASSISTANT_NAME_TELUGU in llm_msg):
+                    greeting_sent = True
+                    break
+    except Exception:
+        greeting_sent = False
+
+    # ----- new: prepare slots_text that the LLM can read (or a "no slots" message) -----
+    # ----- formatting helpers for TTS-friendly slots (date -> "Month D, YYYY", time -> "9 AM" or "9:30 AM") -----
+    def _format_time_for_tts(t: str):
+        # t examples: "09:30 AM", "9:30 AM", "12:00 PM", "03:00 PM"
+        if not t:
+            return ""
+        t = t.strip()
+        # remove leading zero from hour
+        t = re.sub(r"^0", "", t)
+        # normalize AM/PM spacing and uppercase
+        t = re.sub(r"\s+", " ", t).upper()
+        # if hour:00, convert to "9 AM" style
+        m = re.match(r"^(\d{1,2}):00\s*(AM|PM)$", t, flags=re.I)
+        if m:
+            return f"{int(m.group(1))} {m.group(2).upper()}"
+        return t
+
+    def _format_date_for_tts(date_iso: str):
+        # Convert YYYY-MM-DD to "Month D, YYYY" (e.g., 2025-11-06 -> November 6, 2025)
+        try:
+            dt = datetime.strptime(date_iso, "%Y-%m-%d")
+            return dt.strftime("%B %-d, %Y")  # on Linux/Unix the %-d removes leading zero
+        except Exception:
+            # fallback: try without %-d for Windows compatibility
+            try:
+                dt = datetime.strptime(date_iso, "%Y-%m-%d")
+                return dt.strftime("%B %d, %Y")
+            except Exception:
+                return date_iso
+
+    slots_text_lines = []
+    if not available_slots:
+        slots_text = "No available slots."
+    else:
+        for doc, meta in available_slots.items():
+            dept = meta.get("department", "")
+            av = meta.get("available", []) or []
+            if not av:
+                slots_text_lines.append(f"{doc} — {dept}: NO_SLOTS")
+                continue
+            slot_parts = []
+            for s in av:
+                d_iso = s.get("date", "")
+                d = _format_date_for_tts(d_iso) if d_iso else ""
+                tm = _format_time_for_tts(s.get("time", ""))
+                if d and tm:
+                    slot_parts.append(f"{d} at {tm}")
+                elif d:
+                    slot_parts.append(d)
+                elif tm:
+                    slot_parts.append(tm)
+            slots_text_lines.append(f"{doc} — {dept}: " + ", ".join(slot_parts))
+        slots_text = "\n".join(slots_text_lines) if slots_text_lines else "No available slots."
+
+
+    # small greeting clause to inject into the prompt (model should only speak greeting if greeting_sent is False)
+    if greeting_sent:
+        greeting_clause = "History indicates the initial greeting has already been sent; DO NOT repeat the initial greeting."
+    else:
+        # prefer Telugu names if provided
+        agent_name_telugu = ASSISTANT_NAME_TELUGU or ASSISTANT_NAME
+        hosp_name_telugu = HOSPITAL_NAME_TELUGU or HOSPITAL_NAME
+        greeting_clause = (
+            f'At the start of the conversation say a single short localized greeting that mentions the agent and hospital '
+            f'in Telugu script (example): \"{agent_name_telugu} — {hosp_name_telugu} తరపున మీతో మాట్లాడుతున్నది.\" '
+            "ONLY say this greeting if it has not already appeared in history."
+        )
+
+    # recompute history_json for prompt (safe string)
     history_json = json.dumps(history, ensure_ascii=False, indent=2)
     slots_json = json.dumps(available_slots, ensure_ascii=False, indent=2)
     
     system_prompt = f"""
-You are {ASSISTANT_NAME}, the friendly, empathetic, and highly competent virtual assistant for {HOSPITAL_NAME}.
-You MUST reply primarily in the language identified by the code '{language_code}'.
+You are {ASSISTANT_NAME}, an empathetic, professional hospital assistant for {HOSPITAL_NAME}.
+You MUST reply primarily in the language identified by the code '{language_code}' and you MUST keep replies short and action-oriented.
 
-Initial greeting (say once at conversation start):
-- Say a single short localized greeting that mentions the agent and hospital, using the user's language ({language_code}).
-  Example for Telugu: "Naira AI agent {HOSPITAL_NAME} తరపున మీతో మాట్లాడుతోంది."
-  Do NOT repeat this greeting again later in the same conversation.
-- Only ask confirmation once if the user wants to book/reschedule/cancel an appointment.
-Tone & scope:
-- Sound human, warm, natural, and empathetic (e.g., "I'm sorry to hear you're not feeling well — let's get this sorted." translated into {language_code}).
-- Keep replies short and conversational.
-- Focus strictly on hospital tasks: booking, rescheduling, cancelling appointments, doctor availability, general hospital info, emergency triage, language switch, or transfer to a human agent.
-- Do not answer unrelated questions except a brief clarifying question when needed.
-- Try not to make any gramatical mistakes in {language_code} and use respected way to speak like dont use unnadu,use unnaru.
-Language mixing rule:
-- Reply primarily in {language_code}.
-- Short, natural insertions of English words are allowed when they make the reply more natural (examples: "available ga unnaru", "slot confirm cheyali", "mobile number"); however, prefer phrases and sentence structure in {language_code}.
-- Avoid full English sentences when the conversation is in {language_code} .
+GREETING:
+- {greeting_clause}
+- If the user's language code is 'te-IN', prefer the Telugu-script names: "{ASSISTANT_NAME_TELUGU}" and "{HOSPITAL_NAME_TELUGU}". Otherwise use the ASCII names "{ASSISTANT_NAME}" and "{HOSPITAL_NAME}".
 
-Doctor list & specialty rule:
-- When listing doctors, present each on a separate plain line with the specialty shown in English only.
-  Example:
+LANGUAGE RULES:
+- Detect and reply in the user's language (use the provided language code). Use polite, human phrasing.
+- Very short English insertions are allowed, but prefer native-language phrasing and sentence structure.
+- When switching languages (user asked to change), confirm the language change and then reply in the new language from that turn onward.
+
+SCOPE & TONE:
+- Stay strictly within hospital-related tasks: booking, rescheduling, cancelling appointments, checking doctor availability, triage/emergency status, language switch, or transferring to human.
+- Be empathetic and professional. Keep output short (1–3 short sentences or 2 short bullets).
+- Avoid extra punctuation, emojis, markup, or code. Output plain text only.
+
+DOCTOR LISTING FORMAT:
+- When listing doctors present each on a separate plain line and list specialty in English only:
   Dr. Gupta — General Medicine
   Dr. Sharma — Cardiology
-- If the user asks what a specialty means, explain the specialty briefly in the user's language ({language_code}), one short sentence.
 
-Conversation rules and slot handling (strict):
-1. Read the "User's Latest Transcript" and respond naturally in {language_code}.
-2. Be empathetic. If the user is unwell, acknowledge kindly.
-3. ALWAYS STATE FULL SLOT: When offering a slot, always state the full date and full time (e.g., "Dr. Gupta has a slot on November 6, 2025 at 9:30 AM"), but translate the surrounding sentence into {language_code} (you may keep the date/time formatted in English numerals).
-4. ASK FOR MISSING DETAILS: Mandatory.
-   - After the user agrees to a slot, ask for any missing confirmation details needed to finalize the booking (mobile number, name, reason for visit, preferred location/branch).
-   - Example (in {language_code}): "Great — Dr. Gupta on November 6, 2025 at 9:30 AM available gaa undi. Lock cheyadaniki mee mobile number and reason for the visit kavali."
-5. Always ask for `reason` (if unknown) and `location` (if not provided).
-6. NEVER append JSON or metadata in replies — only natural conversational text.
-7. Keep replies short and focused on the next actionable step.
+DOCTORS AVAILABLE SLOTS (TTS-friendly):
+{slots_text}
 
-Error / repetition rule:
-- Do not repeat the initial greeting more than once.
-- Avoid excessive punctuation, asterisks, brackets, or formatting — keep output plain and user-friendly.
 
-Available Slots and Conversation History will be injected as:
-Conversation history (so far):
-{history_json}
+TIME / TTS-FRIENDLY FORMATTING (IMPORTANT):
+- When giving dates/times, format them exactly like:
+  "November 6, 2025 at 9 AM"
+  - Do NOT use colons or special punctuation in times (avoid "9:00 AM" — use "9 AM").
+  - Use English numerals for clarity.
+  - Keep the surrounding sentence in the user's language.
+- This prevents the TTS engine from producing unnatural speech.
 
-Available Slots (the only slots you can book):
-{slots_json}
+MANDATORY DATA FIELDS & ASKING FOR MISSING DATA:
+- Always ask for missing mandatory booking info before confirming:
+  * name, phone number, reason for visit, preferred location/branch, language (if unknown), and emergency_status (choose one: low, medium, high).
+- Ask one question at a time. Example:
+  "Great — I can book Dr. Gupta on November 6, 2025 at 9 AM. To confirm, please give your full name."
+- If user gives partial info, acknowledge and ask the remaining required fields.
+
+BOOKING / RESCHEDULE / CANCEL WORKFLOW (strict):
+- Booking:
+  * Offer only available slots from the provided Available Slots.
+  * When user confirms a slot, ask for any missing mandatory fields (name, phone, reason, location, emergency_status).
+  * After collecting required fields, respond with a brief confirmation sentence (in user's language) and the exact full slot text (date and time formatted per TTS rule).
+  * Do NOT output or append any JSON or metadata to the user's reply (plain text only).
+- Rescheduling:
+  * Require the existing `appointment_id` to start reschedule flow.
+  * Ask the user for their preferred new time and propose available alternatives if the requested time is unavailable.
+  * Ask confirmation: "Is this new time OK?" If user says yes, update the booking and indicate the booking was rescheduled.
+  * Save `emergency_status` if provided or ask for it.
+- Cancelling:
+  * Require the existing `appointment_id`.
+  * Ask for explicit confirmation to cancel (e.g., "Please confirm you want to cancel appointment <ID> — say 'yes' to cancel').
+  * After explicit confirmation, mark booking cancelled and respond with a brief cancellation confirmation.
+
+EMERGENCY / TRIAGE:
+- If user describes urgent symptoms, ask quick triage questions and set `emergency_status` to "high" if life-threatening signs present.
+- Always advise to call emergency services immediately in life-threatening situations (give a short phrase in user's language).
+
+STATE & JSON RULES (for internal state updater model):
+- llm_for_response must return **only** natural language reply (no JSON, no metadata).
+- llm_for_json (the state-updater model) must return only **JSON** (the entire updated `user_details` and `bookings` object) per the schema provided to the system.
+
+ERRORS & CLARIFICATIONS:
+- If user input is unclear, ask a single short clarifying question.
+- If a user provides a booking id that doesn't exist, say a short message asking them to re-check the ID.
+
+VOICE / NAME SPEECH:
+- The agent & hospital names must appear in the initial greeting in Telugu script.
+- When repeating the names later, you may use the user's language but prefer using the Telugu script at least on first mention.
+
+EXAMPLES (formatting guidance):
+- Confirmed booking reply example (Telugu):
+  "బుక్ అయింది: Dr. Gupta — General Medicine, November 6, 2025 at 9 AM. నేను మీకు ఒక కన్ఫర్మేషన్ SMS పంపిస్తాను. నాకు మీ ఫోన్ నంబర్ చెప్పగలరా?"
+- Cancel confirmation request example:
+  "మీరు appointment-id 12345 ను రద్దు చేయాలనుకుంటున్నారా? ధృవీకరించడానికి 'yes' లేదా 'no' చెప్పండి."
+
+STRICT: No JSON or metadata in llm_for_response outputs. Keep replies short and actionable.
 """
 
 
@@ -222,7 +390,7 @@ Available Slots (the only slots you can book):
         return None
 
 
-async def llm_for_json(user_transcript: str, llm_text: str, request_id: str, history: dict):
+async def llm_for_json(user_transcript: str, llm_text: str, request_id: str, history: dict,language_code: str):
     """
     Call LLM to return STRICT JSON representing the *new updated state*.
     The model must return only JSON. Returns dict or None.
@@ -244,6 +412,7 @@ You are a JSON-only state updater. Given the previous conversation state (`previ
 {previous_state_json}
 
 **Current Interaction:**
+
 User: "{user_transcript}"
 Assistant: "{llm_text}"
 
@@ -256,6 +425,7 @@ Assistant: "{llm_text}"
     * If the "Current Interaction" *cancels* or *reschedules* an **existing** booking, update its `status` or details in the array.
 4.  Return **ONLY** the JSON for the *updated state* in this exact format:
 {{
+  "intent": "<intent_name>",  # one of: intent_book_appointment, intent_reschedule, intent_cancel, intent_doctor_availability, intent_general_info, intent_emergency, intent_language_switch, intent_transfer_to_human,
   "user_details": {{
     "name": "",
     "age": "",
@@ -378,13 +548,6 @@ async def synthesize_and_send_tts(websocket: WebSocket, text: str, language_code
             await websocket.send_json({"type": "audio_end", "bytes": len(audio_bytes_buffer)})
         except Exception:
             logging.debug(f"[{request_id}] couldn't send audio_end")
-        # debug write
-        try:
-            debug_path = os.path.join(os.getcwd(), "debug_last.mp3")
-            with open(debug_path, "wb") as df:
-                df.write(bytes(audio_bytes_buffer))
-        except Exception:
-            pass
         return True
     else:
         logging.warning(f"[{request_id}] No audio bytes collected from TTS")
@@ -417,6 +580,8 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
             if os.path.exists(history_path):
                 with open(history_path, "r", encoding="utf-8") as fh:
                     history = json.load(fh)
+                    if "_greeting_sent" not in history:
+                        history["_greeting_sent"] = False
                     # Ensure all keys are present
                     if "conversations" not in history: history["conversations"] = []
                     if "user_details" not in history: history["user_details"] = {"name": "", "age": "", "phone": "", "language": "", "location": ""}
@@ -462,6 +627,11 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
 
         # 3) LLM for response (stateful, with history and slots)
         llm_response_text = await llm_for_response(user_transcript, language_code, request_id, history, DUMMY_AVAILABLE_SLOTS)
+        try:
+            if ("నైరా" in llm_response_text) or (ASSISTANT_NAME_TELUGU and ASSISTANT_NAME_TELUGU in llm_response_text):
+                history["_greeting_sent"] = True
+        except Exception:
+            pass
         if not llm_response_text:
             llm_response_text = "సారీ, నేను మీకో ఒక సమాధానం ఇవ్వలేకపోతున్నాను."  # fallback friendly msg in telugu
         
@@ -475,7 +645,27 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
         await synthesize_and_send_tts(websocket, llm_response_text, language_code, request_id)
 
         # 4) LLM for strict JSON state update
-        updated_state = await llm_for_json(user_transcript, llm_response_text, request_id, history)
+        updated_state = await llm_for_json(user_transcript, llm_response_text, request_id, history,language_code)
+        # -----------------------
+        # Capture model-decided intent or action
+        # -----------------------
+        try:
+            # if model provided an explicit field like "intent" or "user_intent", store it
+            intent_field = None
+            if isinstance(updated_state, dict):
+                intent_field = (
+                    updated_state.get("intent")
+                    or updated_state.get("user_intent")
+                    or updated_state.get("intent_type")
+                    or updated_state.get("action")
+                )
+            if intent_field:
+                append_additional_prompt(history, f"model_intent: {intent_field}")
+            else:
+                # fallback: record that model updated conversation but no explicit intent
+                append_additional_prompt(history, "model_intent: unspecified")
+        except Exception as e:
+            logging.warning(f"[{request_id}] Failed to log model intent: {e}")
 
         # 5) Append turn to `conversations`
         turn = {
@@ -487,6 +677,31 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
 
         # 6) Update state from llm_for_json
         if updated_state:
+            prev_bookings = history.get("bookings", [])
+            prev_map = {b.get("appointment_id"): b for b in prev_bookings if b.get("appointment_id")}
+            new_bookings = updated_state.get("bookings", []) or []
+
+            # Detect newly confirmed bookings (appointment_id not present before)
+            for b in new_bookings:
+                aid = b.get("appointment_id")
+                status = b.get("status", "")
+                if aid and aid not in prev_map and status == "confirmed":
+                    # new booking - call stub
+                    book_appointment(b)
+
+            # Detect cancellations / status changed
+            for b in new_bookings:
+                aid = b.get("appointment_id")
+                status = b.get("status", "")
+                if aid and aid in prev_map:
+                    prev_status = prev_map[aid].get("status", "")
+                    if prev_status != status:
+                        if status == "cancelled":
+                            cancel_booking(b)
+                        elif status == "rescheduled":
+                            reschedule_booking(b)
+
+            # Overwrite history with updated_state values
             if "user_details" in updated_state and updated_state["user_details"] is not None:
                 history["user_details"] = updated_state["user_details"]
             if "bookings" in updated_state and updated_state["bookings"] is not None:
@@ -509,7 +724,6 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
             logging.info(f"[{request_id}] Saved updated history to {history_path}")
         except Exception:
             logging.exception(f"[{request_id}] failed to write history")
-
     except Exception as e:
         logging.exception(f"[{request_id}] pipeline error: {e}")
         try:
@@ -536,13 +750,18 @@ async def websocket_agent(websocket: WebSocket):
         while True:
             try:
                 message = await websocket.receive()
-            except WebSocketDisconnect:
-                logging.info(f"[{request_id}] client disconnected (inside loop)")
+            except (WebSocketDisconnect, RuntimeError) as e:
+                logging.info(f"[{request_id}] client disconnected (inside loop) or receive failed: {e}")
                 break
 
+
+            # collect binary audio chunks
             if "bytes" in message:
                 audio_buffer.append(message["bytes"])
-            elif "text" in message:
+                continue
+
+            # handle control/text frames
+            if "text" in message:
                 try:
                     data = json.loads(message["text"])
                 except Exception:
@@ -553,76 +772,56 @@ async def websocket_agent(websocket: WebSocket):
                     if not audio_buffer:
                         logging.warning(f"[{request_id}] stop_speaking with empty buffer")
                         continue
-                    
-                    # --- FIX: Generate a unique ID for *this turn's* audio file ---
+
+                    # --- create a unique temp file for this turn ---
                     turn_id = str(uuid.uuid4())
                     input_audio_path = os.path.join(TEMP_DIR, f"{request_id}_{turn_id}_input.webm")
-                    # --- END FIX ---
-                    
-                    temp_files.append(input_audio_path)
-                    with open(input_audio_path, "wb") as f:
-                        for chunk in audio_buffer:
-                            f.write(chunk)
-                    audio_buffer = []
-                    # run pipeline synchronously
-                    await run_batch_stt_pipeline(input_audio_path, request_id, websocket)
-    except WebSocketDisconnect:
-        logging.info(f"[{request_id}] client disconnected (outside loop)")
-    except Exception as e:
-        logging.exception(f"[{request_id}] WS main error: {e}")
-    finally:
-        logging.info(f"[{request_id}] cleaning up {len(temp_files)} files")
-        for p in temp_files:
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
-    await websocket.accept()
-    request_id = str(uuid.uuid4())
-    logging.info(f"[{request_id}] WS connected")
 
-    audio_buffer = []
-    temp_files = []
-    try:
-        while True:
-            try:
-                message = await websocket.receive()
-            except WebSocketDisconnect:
-                logging.info(f"[{request_id}] client disconnected (inside loop)")
-                break
-
-            if "bytes" in message:
-                audio_buffer.append(message["bytes"])
-            elif "text" in message:
-                try:
-                    data = json.loads(message["text"])
-                except Exception:
-                    logging.warning(f"[{request_id}] Received non-json text")
-                    continue
-
-                if data.get("type") == "stop_speaking":
-                    if not audio_buffer:
-                        logging.warning(f"[{request_id}] stop_speaking with empty buffer")
+                    # write the in-memory chunks to disk
+                    try:
+                        temp_files.append(input_audio_path)
+                        with open(input_audio_path, "wb") as f:
+                            for chunk in audio_buffer:
+                                f.write(chunk)
+                    except Exception as e:
+                        logging.exception(f"[{request_id}] failed to write temp audio file: {e}")
+                        audio_buffer = []
+                        # remove from temp_files if append succeeded but write failed
+                        try:
+                            temp_files.remove(input_audio_path)
+                        except Exception:
+                            pass
                         continue
-                    # save audio to file
-                    input_audio_path = os.path.join(TEMP_DIR, f"{request_id}_input.webm")
-                    temp_files.append(input_audio_path)
-                    with open(input_audio_path, "wb") as f:
-                        for chunk in audio_buffer:
-                            f.write(chunk)
+
+                    # clear the in-memory buffer (we now have the file)
                     audio_buffer = []
-                    # run pipeline synchronously
-                    await run_batch_stt_pipeline(input_audio_path, request_id, websocket)
+
+                    # run the pipeline (STT -> LLM -> TTS -> state update)
+                    try:
+                        await run_batch_stt_pipeline(input_audio_path, request_id, websocket)
+                    except Exception as e:
+                        logging.exception(f"[{request_id}] run_batch_stt_pipeline failed: {e}")
+
+                    # remove the temp file immediately (safer)
+                    try:
+                        if os.path.exists(input_audio_path):
+                            os.remove(input_audio_path)
+                        try:
+                            temp_files.remove(input_audio_path)
+                        except ValueError:
+                            pass
+                    except Exception as e:
+                        logging.debug(f"[{request_id}] failed to remove temp file {input_audio_path}: {e}")
+
     except WebSocketDisconnect:
         logging.info(f"[{request_id}] client disconnected (outside loop)")
     except Exception as e:
         logging.exception(f"[{request_id}] WS main error: {e}")
     finally:
         logging.info(f"[{request_id}] cleaning up {len(temp_files)} files")
-        for p in temp_files:
+        for p in list(temp_files):  # iterate copy to be safe
             try:
                 if os.path.exists(p):
                     os.remove(p)
             except Exception:
-                pass
+                logging.debug(f"[{request_id}] failed to remove leftover temp file {p}")

@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from agent import router as http_router # The batch API from before
+from agent import router as http_router 
 from agent import router as agent_router
 app = FastAPI(
     title="AI Agent (Batch + Streaming)",
@@ -24,15 +24,6 @@ async def get_batch_page():
             return f.read()
     except FileNotFoundError:
         return "Batch test page (index.html) not found."
-
-@app.get("/stream", response_class=HTMLResponse, tags=["Test Pages"])
-async def get_streaming_page():
-    """Serves the test page for the real-time streaming agent."""
-    try:
-        with open("stream.html") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "Streaming test page (stream.html) not found."
 
 
 if __name__ == "__main__":

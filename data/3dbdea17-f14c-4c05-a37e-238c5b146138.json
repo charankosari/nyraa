@@ -1,0 +1,30 @@
+{
+  "requestId": "3dbdea17-f14c-4c05-a37e-238c5b146138",
+  "createdAt": "2025-11-05T15:53:13.186204Z",
+  "conversations": [
+    {
+      "user": "Hi hello my name is Shivacharan.",
+      "llm": "Naira AI agent Sunrise Hospital తరపున మీతో మాట్లాడుతోంది. \n\nHello Shivacharan! How can I assist you today?",
+      "createdAt": "2025-11-05T15:53:19.845797Z"
+    },
+    {
+      "user": "Hello Nayra, hey can I know is there any available doctors in the current hospital?",
+      "llm": "Dr. Sharma — Cardiology  \nDr. Gupta — General Medicine  \n\nEee doctorlu ippudu hospital lo available ga unnaru. Mere yemi specific ga choodali anukuntunnara?",
+      "createdAt": "2025-11-05T15:53:37.383640Z"
+    },
+    {
+      "user": "Can I know more details about Dr. Sharma and available slots of Dr. Sharma and can we speak in English?",
+      "llm": "Dr. Sharma specializes in Cardiology, which involves diagnosing and treating heart-related conditions. \n\nDr. Sharma has the following available slots:\n- November 6, 2025 at 10:00 AM\n- November 6, 2025 at 11:00 AM\n- November 7, 2025 at 3:00 PM\n\nWould you like to book an appointment with Dr. Sharma? If yes, please let me know which slot works for you!",
+      "createdAt": "2025-11-05T15:54:01.372119Z"
+    }
+  ],
+  "user_details": {
+    "name": "Shivacharan",
+    "age": "",
+    "phone": "",
+    "language": "en-IN",
+    "location": ""
+  },
+  "bookings": [],
+  "lastUpdatedAt": "2025-11-05T15:54:01.372127Z"
+}

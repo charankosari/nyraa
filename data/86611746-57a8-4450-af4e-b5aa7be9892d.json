@@ -1,0 +1,20 @@
+{
+  "requestId": "86611746-57a8-4450-af4e-b5aa7be9892d",
+  "createdAt": "2025-11-05T16:09:56.300520Z",
+  "conversations": [
+    {
+      "user": "హాయ్ అండి నా పేరు శివచరణ్.",
+      "llm": "Naira AI agent Sunrise Hospital తరపున మీతో మాట్లాడుతోంది. మీకి ఎలా సహాయపడాలి?",
+      "createdAt": "2025-11-05T16:10:04.195842Z"
+    }
+  ],
+  "user_details": {
+    "name": "శివచరణ్",
+    "age": "",
+    "phone": "",
+    "language": "te-IN",
+    "location": ""
+  },
+  "bookings": [],
+  "lastUpdatedAt": "2025-11-05T16:10:04.195858Z"
+}

@@ -1,0 +1,20 @@
+{
+  "requestId": "5a706434-47a7-4b88-8618-920bf41abc7e",
+  "createdAt": "2025-11-05T16:09:40.690892Z",
+  "conversations": [
+    {
+      "user": "Hello and I am Purushottam.",
+      "llm": "Naira AI agent Sunrise Hospital తరపున మీతో మాట్లాడుతుంది. \n\nHow can I assist you today, Purushottam? Are you looking to book, reschedule, or cancel an appointment?",
+      "createdAt": "2025-11-05T16:09:47.253050Z"
+    }
+  ],
+  "user_details": {
+    "name": "Purushottam",
+    "age": "",
+    "phone": "",
+    "language": "en-IN",
+    "location": ""
+  },
+  "bookings": [],
+  "lastUpdatedAt": "2025-11-05T16:09:47.253065Z"
+}
