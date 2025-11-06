@@ -4,7 +4,6 @@ import re
 import json
 import uuid
 import logging
-import asyncio
 import base64
 from dotenv import load_dotenv
 from datetime import datetime
@@ -34,7 +33,7 @@ DEFAULT_VOICE = "anushka"
 HOSPITAL_NAME = os.getenv("HOSPITAL_NAME", "Sunrise Hospital")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "NyraAI")
 HOSPITAL_NAME_TELUGU = os.getenv("HOSPITAL_NAME_TELUGU","సన్రైస్ హాస్పిటల్")  # e.g. "సన్రైస్ హాస్పిటల్"
-ASSISTANT_NAME_TELUGU = os.getenv("ASSISTANT_NAME_TELUGU","నైరా ఏఐ ఏజెంట్")  # e.g. "నైరా ఏఐ ఏజెంట్"
+ASSISTANT_NAME_TELUGU = os.getenv("ASSISTANT_NAME_TELUGU","నైరా ఏ ఐ ఏజెంట్")  # e.g. "నైరా ఏఐ ఏజెంట్"
 try:
     sarvam_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -65,6 +64,7 @@ DUMMY_AVAILABLE_SLOTS = {
         ]
     }
 }
+
 
 # -----------------------
 # Booking helper stubs
@@ -107,15 +107,35 @@ def reschedule_booking(data: dict):
 # -----------------------
 # Intent / prompt helpers (AI-driven)
 # -----------------------
-def append_additional_prompt(history: dict, prompt_text: str):
-    """Append a small model-generated intent or context tag."""
+# -----------------------
+# Intent / prompt helpers (overwrite mode)
+# -----------------------
+def set_additional_prompt(history: dict, key: str, value):
+    """
+    Store one small, structured metadata item in history['additional_prompts_map'].
+    - This overwrites previous values for the same key (no repeated list entries).
+    - We keep a map for quick lookup, but also preserve a concise list for ordering.
+    """
     if not history:
         return
+    # maintain both a map (for overwrite) and a short list (for chronological audit if needed)
+    if "additional_prompts_map" not in history or history["additional_prompts_map"] is None:
+        history["additional_prompts_map"] = {}
     if "additional_prompts" not in history or history["additional_prompts"] is None:
         history["additional_prompts"] = []
-    from datetime import datetime
-    entry = {"at": datetime.utcnow().isoformat() + "Z", "text": prompt_text}
-    history["additional_prompts"].append(entry)
+
+    ts = datetime.utcnow().isoformat() + "Z"
+    # overwrite map entry
+    history["additional_prompts_map"][key] = {"at": ts, "v": value}
+
+    # also update the short list: remove any existing entry with same key, then append
+    # list entries keep small objects {k, at, v} for UI/audit but are unique per key
+    new_entry = {"k": key, "at": ts, "v": value}
+    # remove previous same-key entry if present
+    history["additional_prompts"] = [e for e in history["additional_prompts"] if e.get("k") != key]
+    history["additional_prompts"].append(new_entry)
+
+
 # -----------------------
 # Helpers (No changes to extract_json_from_text or remove_json_and_metadata_markers)
 # -----------------------
@@ -282,6 +302,18 @@ async def llm_for_response(user_transcript: str, language_code: str, request_id:
     system_prompt = f"""
 You are {ASSISTANT_NAME}, an empathetic, professional hospital assistant for {HOSPITAL_NAME}.
 You MUST reply primarily in the language identified by the code '{language_code}' and you MUST keep replies short and action-oriented.
+# ACTIVE-INTENT RULES (CRITICAL)
+- This conversation may have an existing active intent in the session state. The assistant must **stay within the active intent** until it is explicitly completed or cancelled by the user.
+- If history.active_intent is non-empty, DO NOT change the intent to another action. Continue the active flow (ask exactly one next question if missing data, confirm proposed changes, or apply the requested action when the user confirms).
+- Only clear the active intent when:
+  * The booking status becomes a final state: "confirmed", "rescheduled", or "cancelled", OR
+  * The user explicitly asks to stop/cancel the flow or switch intent (explicit phrases like "stop", "cancel", "I want to do something else", "book new appointment").
+- When an intent is started for the first time (no active_intent), you may set active_intent to one of: intent_book_appointment, intent_reschedule, intent_cancel — but once set, keep it until finished.
+- Ask **one** question at a time (one missing field per reply). Wait for user's answer before asking another. If all required fields are present, perform the action (confirm the booking/reschedule/cancel) and produce a short confirmation sentence.
+# MANDATORY FIELDS / PROGRESS
+- Required booking fields: name, phone, reason, location, language, emergency_status.
+- Use the TTS-friendly time/date formatting rules (as before).
+- When suggesting or confirming a slot, say exactly the final TTS-friendly slot string (e.g. "November 6, 2025 at 9 AM") so the user can confirm.
 
 GREETING:
 - {greeting_clause}
@@ -291,7 +323,7 @@ LANGUAGE RULES:
 - Detect and reply in the user's language (use the provided language code). Use polite, human phrasing.
 - Very short English insertions are allowed, but prefer native-language phrasing and sentence structure.
 - When switching languages (user asked to change), confirm the language change and then reply in the new language from that turn onward.
-
+- Dont make any mistakes like మిమ్మల్ని ఎలా సహాయపడగలను instead మికు ఎలా సహాయపడగలను 
 SCOPE & TONE:
 - Stay strictly within hospital-related tasks: booking, rescheduling, cancelling appointments, checking doctor availability, triage/emergency status, language switch, or transferring to human.
 - Be empathetic and professional. Keep output short (1–3 short sentences or 2 short bullets).
@@ -341,6 +373,10 @@ EMERGENCY / TRIAGE:
 - If user describes urgent symptoms, ask quick triage questions and set `emergency_status` to "high" if life-threatening signs present.
 - Always advise to call emergency services immediately in life-threatening situations (give a short phrase in user's language).
 
+ENDING THE FLOW:
+- After completing a booking, reschedule, or cancellation, politely ask if the user needs further assistance.
+- If user says "no" or similar, end with a polite closing sentence.
+- THEN SAY GOODBYE and have a nice day in the user's language.
 STATE & JSON RULES (for internal state updater model):
 - llm_for_response must return **only** natural language reply (no JSON, no metadata).
 - llm_for_json (the state-updater model) must return only **JSON** (the entire updated `user_details` and `bookings` object) per the schema provided to the system.
@@ -404,9 +440,18 @@ async def llm_for_json(user_transcript: str, llm_text: str, request_id: str, his
     previous_state_json = json.dumps(previous_state, ensure_ascii=False, indent=2)
 
     system_prompt = f"""
-You are a JSON-only state updater. Given the previous conversation state (`previous_state`), the user's latest transcript (`user_transcript`), and the assistant's reply (`llm_reply`), your job is to return the **ENTIRELY NEW** state object, structured according to the schema.
+You are a JSON-only state updater. Given the previous conversation state (`previous_state`) {previous_state_json}, the user's latest transcript (`user_transcript`) {user_transcript}, and the assistant's reply (`llm_reply`) {llm_text}, your job is to return the **ENTIRELY NEW** state object, structured according to the schema.
 
-**Do not just return the *changes***. Return the **full, updated** `user_details` and `bookings` objects as they should now exist.
+***ACTIVE-INTENT / PROGRESS RULES (MUST FOLLOW)***
+- If `previous_state.active_intent` is non-empty, you MUST keep `intent` equal to that value **unless** the user explicitly asked to switch or cancel the flow in their transcript.
+- Use booking `status` values to represent progress:
+  * For new booking flows not yet confirmed, use `"pending"`.
+  * For reschedule flows in progress, use `"reschedule_in_progress"`.
+  * When the user confirms the reschedule, set status to `"rescheduled"`.
+  * When the user confirms a new booking, set status to `"confirmed"` and include `appointment_id` (generate with `str(uuid.uuid4())`).
+  * For cancellations: when user confirms cancellation, set status to `"cancelled"`.
+- **Only** when status is `"confirmed"`, `"rescheduled"`, or `"cancelled"` should downstream code call booking/cancel/reschedule stubs. In-progress statuses indicate the flow is still gathering info.
+- If fields are missing, include them as empty strings in the bookings object and ensure `user_details` contains partial data if provided.
 
 **Previous State:**
 {previous_state_json}
@@ -450,13 +495,20 @@ Only output the JSON object and nothing else. Use null or empty strings for unkn
 Generate a new `appointment_id` using `str(uuid.uuid4())` ONLY for newly confirmed bookings.
 """
     user_prompt = f"Previous State:\n{previous_state_json}\n\nUser transcript:\n{user_transcript}\n\nAssistant reply:\n{llm_text}\n\nProduce the updated state JSON now."
-
+    active_intent = history.get("active_intent", "")
+    pending_id = history.get("pending_appointment_id", "")
+    pending_fields = history.get("pending_required_fields", {})
+    state_snippet = json.dumps({
+        "active_intent": active_intent,
+        "pending_appointment_id": pending_id,
+        "pending_required_fields": pending_fields,
+    }, ensure_ascii=False)
     try:
         resp = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": f"State: {state_snippet}\nUser's Latest Transcript: {user_transcript}"},
             ],
             stream=False,
         )
@@ -570,12 +622,20 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
         # 1) Load History or create new structure
         history_path = os.path.join(DATA_DIR, f"{request_id}.json")
         history = {
-            "requestId": request_id,
-            "createdAt": datetime.utcnow().isoformat() + "Z",
-            "conversations": [],
-            "user_details": {"name": "", "age": "", "phone": "", "language": "", "location": ""},
-            "bookings": []
+        "requestId": request_id,
+        "createdAt": datetime.utcnow().isoformat() + "Z",
+        "conversations": [],
+        "user_details": {"name": "", "age": "", "phone": "", "language": "", "location": ""},
+        "bookings": [],
+        "reschedule": [],   # new: store reschedule events (small structs)
+        "cancel": [],       # new: store cancel events (small structs)
+        "additional_prompts": [],      # short unique list
+        "additional_prompts_map": {},  # map for overwrite semantics
+         "active_intent": "",               # one of: intent_book_appointment, intent_reschedule, intent_cancel, "" (empty when none)
+    "pending_appointment_id": "",      # appointment_id we're currently acting on (if any)
+    "pending_required_fields": {},     # map of which fields still required (e.g., {"name": True, "phone": True})
         }
+
         try:
             if os.path.exists(history_path):
                 with open(history_path, "r", encoding="utf-8") as fh:
@@ -586,6 +646,10 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
                     if "conversations" not in history: history["conversations"] = []
                     if "user_details" not in history: history["user_details"] = {"name": "", "age": "", "phone": "", "language": "", "location": ""}
                     if "bookings" not in history: history["bookings"] = []
+                    if "active_intent" not in history: history["active_intent"] = ""
+                    if "pending_appointment_id" not in history: history["pending_appointment_id"] = ""
+                    if "pending_required_fields" not in history: history["pending_required_fields"] = {}
+
         except Exception as e:
             logging.debug(f"[{request_id}] could not read existing history; creating new: {e}")
 
@@ -649,8 +713,10 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
         # -----------------------
         # Capture model-decided intent or action
         # -----------------------
+       # -----------------------
+        # Capture model-decided intent or action (overwrite existing)
+        # -----------------------
         try:
-            # if model provided an explicit field like "intent" or "user_intent", store it
             intent_field = None
             if isinstance(updated_state, dict):
                 intent_field = (
@@ -659,13 +725,26 @@ async def run_batch_stt_pipeline(audio_file_path: str, request_id: str, websocke
                     or updated_state.get("intent_type")
                     or updated_state.get("action")
                 )
+
             if intent_field:
-                append_additional_prompt(history, f"model_intent: {intent_field}")
+                set_additional_prompt(history, "intent", intent_field)
+                appt_id = None
+                bks = updated_state.get("bookings", []) if isinstance(updated_state.get("bookings", []), list) else []
+                if bks:
+                    first = bks[0]
+                    appt_id = first.get("appointment_id") or first.get("appointmentId") or first.get("id")
+                if not appt_id:
+                    appt_id = history.get("pending_appointment_id") or ""
+                event = {"at": datetime.utcnow().isoformat() + "Z", "intent": intent_field, "appointment_id": appt_id}
+                if "resched" in (intent_field or "").lower() or "reschedule" in (intent_field or "").lower() or "intent_reschedule" == intent_field:
+                    history.setdefault("reschedule", []).append(event)
+                elif "cancel" in (intent_field or "").lower() or "intent_cancel" == intent_field:
+                    history.setdefault("cancel", []).append(event)
             else:
-                # fallback: record that model updated conversation but no explicit intent
-                append_additional_prompt(history, "model_intent: unspecified")
+                set_additional_prompt(history, "intent", "unspecified")
         except Exception as e:
-            logging.warning(f"[{request_id}] Failed to log model intent: {e}")
+            logging.warning(f"[{request_id}] Failed to log model intent (overwrite): {e}")
+
 
         # 5) Append turn to `conversations`
         turn = {
